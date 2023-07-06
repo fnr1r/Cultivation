@@ -12,14 +12,21 @@ use {
 };
 
 #[cfg(target_os = "linux")]
-use crate::AAGL_THREAD;
+use crate::{config::get_config, AAGL_THREAD, GIMI_STATUS};
 #[cfg(target_os = "linux")]
 use anime_launcher_sdk::{
   config::ConfigExt, genshin::config::Config, genshin::game, genshin::states::LauncherState,
   wincompatlib::prelude::*,
 };
 #[cfg(target_os = "linux")]
-use std::{path::Path, process::Stdio, thread};
+use std::{
+  fs::{remove_file, rename},
+  io::Result as IoResult,
+  os::unix::fs::symlink,
+  path::Path,
+  process::Stdio,
+  thread,
+};
 #[cfg(target_os = "linux")]
 use term_detect::get_terminal;
 
@@ -103,6 +110,21 @@ impl SpawnItsFineReally for Command {
     } else {
       Ok(())
     }
+  }
+}
+
+#[cfg(target_os = "linux")]
+pub trait ItsFineReallyResult<T> {
+  fn unwrap_its_fine_really(self, msg: &str) -> anyhow::Result<T>;
+}
+
+#[cfg(target_os = "linux")]
+impl<T> ItsFineReallyResult<T> for IoResult<T> {
+  fn unwrap_its_fine_really(self, msg: &str) -> anyhow::Result<T> {
+    if let Err(e) = &self {
+      println!("{}: {}", msg, e);
+    }
+    Ok(self?)
   }
 }
 
@@ -297,6 +319,184 @@ fn aagl_wine_run<P: AsRef<Path>>(path: P, args: Option<String>) -> Command {
 }
 
 #[cfg(target_os = "linux")]
+fn gimi_link() {
+  // TODO: Fix GIMI linking across filesystems
+  let mut lock = match GIMI_STATUS.lock() {
+    Ok(lock) => {
+      if lock.is_some() {
+        println!("GIMI already linked.");
+        return;
+      }
+      lock
+    }
+    Err(e) => {
+      println!("GIMI_STATUS is poisoned! ({}) Defaulting to None!", e);
+      let mut poisoned_lock = e.into_inner();
+      // Ignore the contained data and replace it with None
+      *poisoned_lock = None;
+      poisoned_lock
+    }
+  };
+
+  let config = get_config();
+
+  let game_install_path = {
+    let game_install_path = config.game_install_path;
+    let Some(game_install_path) = game_install_path else {
+      println!("No game_install_path");
+      lock.replace(false);
+      return;
+    };
+    let mut game_install_path = PathBuf::from(&game_install_path);
+    game_install_path.pop();
+    game_install_path
+  };
+
+  let migoto_path = {
+    let migoto_path = config.migoto_path;
+    let Some(migoto_path) = migoto_path else {
+      println!("No migoto_path");
+      lock.replace(false);
+      return;
+    };
+    let mut migoto_path = PathBuf::from(&migoto_path);
+    migoto_path.pop();
+    migoto_path
+  };
+
+  // 3dmigoto files
+  for file in &[
+    "Mods",
+    "ShaderCache",
+    "ShaderFixes",
+    "d3d11.dll",
+    "d3dcompiler_47.dll",
+    "d3dx.ini",
+  ] {
+    let gd_file = game_install_path.join(file);
+    let migoto_file = migoto_path.join(file);
+    if gd_file.exists() {
+      println!("{:?} already exists!", gd_file);
+      continue;
+    }
+    let _ = symlink(&migoto_file, &gd_file).unwrap_its_fine_really(&format!(
+      "Error symlinking {:?} to {:?}",
+      migoto_file, gd_file
+    ));
+  }
+
+  // 3dmigoto data
+  for file in &["d3dx_user.ini"] {
+    let gd_file = game_install_path.join(file);
+    let migoto_file = migoto_path.join(file);
+    if !migoto_file.exists() {
+      continue;
+    }
+    if gd_file.exists() {
+      println!("{:?} already exists!", gd_file);
+      continue;
+    }
+    let _ = symlink(&migoto_file, &gd_file).unwrap_its_fine_really(&format!(
+      "Error symlinking {:?} to {:?}",
+      migoto_file, gd_file
+    ));
+  }
+
+  lock.replace(true);
+}
+
+#[cfg(target_os = "linux")]
+fn gimi_unlink() {
+  let config = get_config();
+
+  let game_install_path = {
+    let game_install_path = config.game_install_path;
+    let Some(game_install_path) = game_install_path else {
+      println!("No game_install_path");
+      return;
+    };
+    let mut game_install_path = PathBuf::from(&game_install_path);
+    game_install_path.pop();
+    game_install_path
+  };
+
+  let migoto_path = {
+    let migoto_path = config.migoto_path;
+    let Some(migoto_path) = migoto_path else {
+      println!("No migoto_path");
+      return;
+    };
+    let mut migoto_path = PathBuf::from(&migoto_path);
+    migoto_path.pop();
+    migoto_path
+  };
+
+  // 3dmigoto files
+  for file in &[
+    "Mods",
+    "ShaderCache",
+    "ShaderFixes",
+    "d3d11.dll",
+    "d3dcompiler_47.dll",
+    "d3dx.ini",
+  ] {
+    let gd_file = game_install_path.join(file);
+    if gd_file.is_symlink() {
+      let _ = remove_file(&gd_file)
+        .unwrap_its_fine_really(&format!("Failed to remove symlink {:?}", &gd_file));
+      continue;
+    }
+    println!("{:?} is not a symlink.", &gd_file);
+    let mut migoto_file = migoto_path.join(file);
+    if migoto_file.exists() {
+      migoto_file.set_file_name(format!("{:?}.bak", migoto_file.file_name().unwrap()));
+      println!(
+        "{:?} already exists! Renaming to {:?}.",
+        gd_file,
+        migoto_file.file_name().unwrap()
+      );
+    }
+    let _ = rename(&gd_file, &migoto_file)
+      .unwrap_its_fine_really(&format!("Error moving {:?} to {:?}", gd_file, migoto_file));
+  }
+
+  // 3dmigoto data
+  for file in &["d3dx_user.ini"] {
+    let gd_file = game_install_path.join(file);
+    if !gd_file.exists() {
+      continue;
+    } else if gd_file.is_symlink() {
+      let _ = remove_file(&gd_file)
+        .unwrap_its_fine_really(&format!("Failed to remove symlink {:?}", &gd_file));
+      continue;
+    }
+    let mut migoto_file = migoto_path.join(file);
+    if migoto_file.exists() {
+      migoto_file.set_file_name(format!("{:?}.bak", migoto_file.file_name().unwrap()));
+      println!(
+        "{:?} already exists! Renaming to {:?}.",
+        gd_file,
+        migoto_file.file_name().unwrap()
+      );
+    }
+    let _ = rename(&gd_file, &migoto_file)
+      .unwrap_its_fine_really(&format!("Error moving {:?} to {:?}", gd_file, migoto_file));
+  }
+
+  // 3dmigoto logs
+  // HOTFIX
+  for file in &["d3d11_log.txt"] {
+    let gd_file = game_install_path.join(file);
+    let migoto_file = migoto_path.join(file);
+    if !gd_file.exists() {
+      continue;
+    }
+    let _ = rename(&gd_file, &migoto_file)
+      .unwrap_its_fine_really(&format!("Error moving {:?} to {:?}", gd_file, migoto_file));
+  }
+}
+
+#[cfg(target_os = "linux")]
 #[tauri::command]
 pub fn run_un_elevated(path: String, args: Option<String>) {
   let path = Path::new(&path);
@@ -327,11 +527,30 @@ pub fn run_un_elevated(path: String, args: Option<String>) {
       if let Err(e) = game::run() {
         println!("An error occurred while running the game: {}", e);
       }
+      {
+        use crate::GIMI_STATUS;
+        if let Some(x) = GIMI_STATUS.lock().unwrap().take() {
+          if x {
+            gimi_unlink();
+          }
+        }
+      }
     });
     {
       let mut game_thead_lock = AAGL_THREAD.lock().unwrap();
       game_thead_lock.replace(game_thread);
     }
+    return;
+  }
+  if exec_name == "3DMigoto Loader.exe" ||
+    // Allow the user to specify a different file since the exe does not exist
+    // in the Linux version of GIMI
+    path.as_os_str().to_string_lossy().contains("3dmigoto")
+  {
+    // The standard loader does not work correctly
+    // This is most likely related to using DXVK instead of standard DirectX
+    // https://github.com/MrLGamer/GIMI-for-Linux should used instead
+    gimi_link();
     return;
   }
   // Run exe with wine

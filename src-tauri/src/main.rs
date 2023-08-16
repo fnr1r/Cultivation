@@ -47,8 +47,6 @@ static GC_PID: std::sync::Mutex<usize> = Mutex::new(696969);
 
 #[cfg(target_os = "linux")]
 pub static AAGL_THREAD: Lazy<Mutex<Option<JoinHandle<()>>>> = Lazy::new(|| Mutex::new(None));
-#[cfg(target_os = "linux")]
-static GIMI_STATUS: Lazy<Mutex<Option<bool>>> = Lazy::new(|| Mutex::new(None));
 
 fn try_flush() {
   std::io::stdout().flush().unwrap_or(())

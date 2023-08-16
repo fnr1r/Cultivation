@@ -12,23 +12,35 @@ use {
 };
 
 #[cfg(target_os = "linux")]
-use crate::{config::get_config, AAGL_THREAD, GIMI_STATUS};
+use crate::{config::get_config, AAGL_THREAD};
 #[cfg(target_os = "linux")]
 use anime_launcher_sdk::{
   config::ConfigExt, genshin::config::Config, genshin::game, genshin::states::LauncherState,
   wincompatlib::prelude::*,
 };
 #[cfg(target_os = "linux")]
+use once_cell::sync::Lazy;
+#[cfg(target_os = "linux")]
 use std::{
-  fs::{remove_file, rename},
+  fs::{metadata, remove_file, rename, File},
   io::Result as IoResult,
-  os::unix::fs::symlink,
+  os::unix::fs::{symlink, MetadataExt},
   path::Path,
   process::Stdio,
+  sync::Mutex,
   thread,
 };
 #[cfg(target_os = "linux")]
 use term_detect::get_terminal;
+
+#[cfg(target_os = "linux")]
+static GIMI_STATUS: Lazy<Mutex<Option<GimiStatus>>> = Lazy::new(|| Mutex::new(None));
+
+#[derive(Default)]
+struct GimiStatus {
+  success: bool,
+  same_filesystem: bool,
+}
 
 #[cfg(target_os = "linux")]
 fn guess_user_terminal() -> String {
@@ -333,8 +345,44 @@ fn aagl_wine_command<P: AsRef<Path>>(path: P) -> Command {
 }
 
 #[cfg(target_os = "linux")]
+fn same_filesystem<P: AsRef<Path>>(dir1: P, dir2: P) -> std::io::Result<bool> {
+  let meta1 = metadata(dir1)?;
+  let meta2 = metadata(dir2)?;
+  Ok(meta1.dev() == meta2.dev())
+}
+
+fn movl<P: AsRef<Path>>(f1: P, f2: P) -> std::io::Result<()> {
+  use std::fs::{copy, remove_dir_all};
+  let f1 = f1.as_ref();
+  let f2 = f2.as_ref();
+  if same_filesystem(f1, f2.parent().unwrap())? {
+    symlink(f1, f2)
+  } else if f1.is_dir() {
+    copy_dir::copy_dir(f1, f2)?;
+    remove_dir_all(f1)
+  } else {
+    copy(f1, f2)?;
+    remove_file(f1)
+  }
+}
+
+fn mov<P: AsRef<Path>>(f1: P, f2: P) -> std::io::Result<()> {
+  use std::fs::{copy, remove_dir_all};
+  let f1 = f1.as_ref();
+  let f2 = f2.as_ref();
+  if same_filesystem(f1, f2.parent().unwrap())? {
+    rename(f1, f2)
+  } else if f1.is_dir() {
+    copy_dir::copy_dir(f1, f2)?;
+    remove_dir_all(f1)
+  } else {
+    copy(f1, f2)?;
+    remove_file(f1)
+  }
+}
+
+#[cfg(target_os = "linux")]
 fn gimi_link() {
-  // TODO: Fix GIMI linking across filesystems
   let mut lock = match GIMI_STATUS.lock() {
     Ok(lock) => {
       if lock.is_some() {
@@ -353,12 +401,13 @@ fn gimi_link() {
   };
 
   let config = get_config();
+  let mut gimi_status = GimiStatus::default();
 
   let game_install_path = {
     let game_install_path = config.game_install_path;
     let Some(game_install_path) = game_install_path else {
       println!("No game_install_path");
-      lock.replace(false);
+      lock.replace(gimi_status);
       return;
     };
     let mut game_install_path = PathBuf::from(&game_install_path);
@@ -370,13 +419,15 @@ fn gimi_link() {
     let migoto_path = config.migoto_path;
     let Some(migoto_path) = migoto_path else {
       println!("No migoto_path");
-      lock.replace(false);
+      lock.replace(gimi_status);
       return;
     };
     let mut migoto_path = PathBuf::from(&migoto_path);
     migoto_path.pop();
     migoto_path
   };
+
+  let same_filesystem = same_filesystem(&game_install_path, &migoto_path).unwrap_or(true);
 
   // 3dmigoto files
   for file in &[
@@ -393,7 +444,7 @@ fn gimi_link() {
       println!("{:?} already exists!", gd_file);
       continue;
     }
-    let _ = symlink(&migoto_file, &gd_file).unwrap_its_fine_really(&format!(
+    let _ = movl(&migoto_file, &gd_file).unwrap_its_fine_really(&format!(
       "Error symlinking {:?} to {:?}",
       migoto_file, gd_file
     ));
@@ -410,17 +461,29 @@ fn gimi_link() {
       println!("{:?} already exists!", gd_file);
       continue;
     }
-    let _ = symlink(&migoto_file, &gd_file).unwrap_its_fine_really(&format!(
+    let _ = movl(&migoto_file, &gd_file).unwrap_its_fine_really(&format!(
       "Error symlinking {:?} to {:?}",
       migoto_file, gd_file
     ));
   }
 
-  lock.replace(true);
+  if !same_filesystem {
+    let dummy_file = migoto_path.join("files_moved");
+    if !dummy_file.exists() {
+      if let Err(e) = File::create(&dummy_file) {
+        println!("Failed to create file {:?}: {}", dummy_file, e);
+      }
+    }
+  }
+
+  gimi_status.success = true;
+  gimi_status.same_filesystem = same_filesystem;
+  lock.replace(gimi_status);
 }
 
 #[cfg(target_os = "linux")]
-fn gimi_unlink() {
+fn gimi_unlink(gimi_status: GimiStatus) {
+  let same_filesystem = gimi_status.same_filesystem;
   let config = get_config();
 
   let game_install_path = {
@@ -460,9 +523,11 @@ fn gimi_unlink() {
         .unwrap_its_fine_really(&format!("Failed to remove symlink {:?}", &gd_file));
       continue;
     }
-    println!("{:?} is not a symlink.", &gd_file);
+    if same_filesystem {
+      println!("{:?} is not a symlink.", &gd_file);
+    }
     let mut migoto_file = migoto_path.join(file);
-    if migoto_file.exists() {
+    if migoto_file.exists() && same_filesystem {
       migoto_file.set_file_name(format!("{:?}.bak", migoto_file.file_name().unwrap()));
       println!(
         "{:?} already exists! Renaming to {:?}.",
@@ -470,7 +535,7 @@ fn gimi_unlink() {
         migoto_file.file_name().unwrap()
       );
     }
-    let _ = rename(&gd_file, &migoto_file)
+    let _ = mov(&gd_file, &migoto_file)
       .unwrap_its_fine_really(&format!("Error moving {:?} to {:?}", gd_file, migoto_file));
   }
 
@@ -485,7 +550,7 @@ fn gimi_unlink() {
       continue;
     }
     let mut migoto_file = migoto_path.join(file);
-    if migoto_file.exists() {
+    if migoto_file.exists() && same_filesystem {
       migoto_file.set_file_name(format!("{:?}.bak", migoto_file.file_name().unwrap()));
       println!(
         "{:?} already exists! Renaming to {:?}.",
@@ -493,7 +558,7 @@ fn gimi_unlink() {
         migoto_file.file_name().unwrap()
       );
     }
-    let _ = rename(&gd_file, &migoto_file)
+    let _ = mov(&gd_file, &migoto_file)
       .unwrap_its_fine_really(&format!("Error moving {:?} to {:?}", gd_file, migoto_file));
   }
 
@@ -505,8 +570,17 @@ fn gimi_unlink() {
     if !gd_file.exists() {
       continue;
     }
-    let _ = rename(&gd_file, &migoto_file)
+    let _ = mov(&gd_file, &migoto_file)
       .unwrap_its_fine_really(&format!("Error moving {:?} to {:?}", gd_file, migoto_file));
+  }
+
+  if !same_filesystem {
+    let dummy_file = migoto_path.join("files_moved");
+    if dummy_file.exists() {
+      if let Err(e) = remove_file(&dummy_file) {
+        println!("Failed to remove file {:?}: {}", dummy_file, e);
+      }
+    }
   }
 }
 
@@ -542,11 +616,8 @@ pub fn run_un_elevated(path: String, args: Option<String>) {
         println!("An error occurred while running the game: {}", e);
       }
       {
-        use crate::GIMI_STATUS;
-        if let Some(x) = GIMI_STATUS.lock().unwrap().take() {
-          if x {
-            gimi_unlink();
-          }
+        if let Some(gimi_status) = GIMI_STATUS.lock().unwrap().take() {
+          gimi_unlink(gimi_status);
         }
       }
     });

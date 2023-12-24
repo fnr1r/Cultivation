@@ -43,6 +43,9 @@ async fn shutdown_signal() {
 static SERVER: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new("http://localhost:443".to_string()));
 static REDIRECT_MORE: Lazy<Mutex<bool>> = Lazy::new(|| Mutex::new(false));
 
+#[cfg(target_os = "linux")]
+static PREVIOUS_PATH: Lazy<Mutex<Option<PathBuf>>> = Lazy::new(Mutex::default);
+
 #[derive(Clone)]
 struct ProxyHandler;
 
@@ -289,6 +292,16 @@ pub fn connect_to_proxy(proxy_port: u16) {
 }
 
 #[cfg(target_os = "linux")]
+#[inline]
+fn get_aagl_game_path(config: &mut anime_launcher_sdk::genshin::config::Schema) -> &mut PathBuf {
+  use anime_launcher_sdk::anime_game_core::genshin::prelude::GameEdition as E;
+  match config.launcher.edition {
+    E::Global => &mut config.game.path.global,
+    E::China => &mut config.game.path.china,
+  }
+}
+
+#[cfg(target_os = "linux")]
 pub fn connect_to_proxy(proxy_port: u16) {
   let mut config = Config::get().unwrap();
   let proxy_addr = format!("127.0.0.1:{}", proxy_port);
@@ -303,6 +316,25 @@ pub fn connect_to_proxy(proxy_port: u16) {
       .game
       .environment
       .insert("https_proxy".to_string(), proxy_addr);
+  }
+  // TODO: Move this to an appropreately named function
+  'ensurepath: {
+    let aagl_gamepath = get_aagl_game_path(&mut config);
+    let cult_config = get_config();
+    let Some(cult_gamepath) = cult_config.game_install_path else {
+      break 'ensurepath;
+    };
+    let Some(cult_gamepath) = Path::new(&cult_gamepath).parent() else {
+      break 'ensurepath;
+    };
+    if aagl_gamepath == cult_gamepath {
+      break 'ensurepath;
+    }
+    PREVIOUS_PATH
+      .lock()
+      .unwrap()
+      .replace(aagl_gamepath.to_owned());
+    *aagl_gamepath = cult_gamepath.to_owned();
   }
   Config::update(config);
 }
@@ -340,6 +372,12 @@ pub fn disconnect_from_proxy() {
   if config.game.environment.contains_key("https_proxy") {
     config.game.environment.remove("https_proxy");
   }
+  // TODO: Move this to an appropreately named function
+  // Also, this could probably be removed since we never run update_raw,
+  // which writes the changes to the file.
+  if let Some(prev_game_path) = PREVIOUS_PATH.lock().unwrap().take() {
+    *get_aagl_game_path(&mut config) = prev_game_path;
+  };
   Config::update(config);
 }
 

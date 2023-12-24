@@ -37,7 +37,7 @@ args = "2.0"
 getopts = "0.2"
 
 # Access system process info.
-sysinfo = "0.28.4"
+sysinfo = "0.30.0"
 
 # ZIP-archive library.
 zip-extract = "0.1.1"
@@ -79,7 +79,7 @@ ctrlc = "3.2.3"
 
 [target.'cfg(target_os = "linux")'.dependencies.anime-launcher-sdk]
 git = "https://github.com/an-anime-team/anime-launcher-sdk.git"
-tag = "1.11.1"
+tag = "1.12.4"
 default-features = false
 features = ["all", "genshin"]
 

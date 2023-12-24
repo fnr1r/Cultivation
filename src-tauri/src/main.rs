@@ -15,7 +15,7 @@ use tauri::api::path::data_dir;
 use tauri::async_runtime::block_on;
 
 use std::thread;
-use sysinfo::{Pid, ProcessExt, System, SystemExt};
+use sysinfo::{Pid, System};
 
 #[cfg(target_os = "windows")]
 use crate::admin::reopen_as_admin;

@@ -346,6 +346,7 @@ pub fn run_un_elevated(path: String, args: Option<String>) {
           path.to_str().unwrap()
         ));
     });
+    return;
   }
   println!(
     "Can't run {:?}. Running this type of file is not supported yet.",

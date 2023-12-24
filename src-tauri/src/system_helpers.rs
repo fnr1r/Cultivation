@@ -301,8 +301,8 @@ fn aagl_wine_run<P: AsRef<Path>>(path: P, args: Option<String>) -> Command {
 pub fn run_un_elevated(path: String, args: Option<String>) {
   let path = Path::new(&path);
   let exec_name = path.file_name().unwrap().to_str().unwrap();
-  if exec_name == ["Yuan", "Shen", ".exe"].join("").as_str()
-    || exec_name == ["Gen", "shin", "Impact", ".exe"].join("").as_str()
+  if exec_name == concat!("Yu", "an", "Sh", "en", ".exe")
+    || exec_name == concat!("Gen", "sh", "in", "Im", "pa", "ct", ".exe")
   {
     let game_thread = thread::spawn(|| {
       'statechk: {
@@ -322,7 +322,7 @@ pub fn run_un_elevated(path: String, args: Option<String>) {
           E::GameNotInstalled(_) => Err("The game is not installed".to_string()),
           _ => Ok(()),
         }
-        .expect("Can't launch game. Check the other launcher.");
+        .expect("Can't launch game. Check the other launcher");
       }
       if let Err(e) = game::run() {
         println!("An error occurred while running the game: {}", e);

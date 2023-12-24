@@ -282,10 +282,10 @@ fn aagl_wine_run<P: AsRef<Path>>(path: P, args: Option<String>) -> Command {
     .into_iter()
     .map(|(k, v)| (k.to_string(), v.to_string()))
     .collect();
-  use anime_launcher_sdk::components::wine::UnifiedWine::*;
+  use anime_launcher_sdk::components::wine::UnifiedWine as E;
   let wined = match wine_run {
-    Default(wine) => wine,
-    Proton(proton) => proton.wine().clone(),
+    E::Default(wine) => wine,
+    E::Proton(proton) => proton.wine().clone(),
   };
   let mut cmd = Command::new(&wined.binary);
   cmd.arg(path.as_ref()).envs(wined.get_envs()).envs(env);
@@ -311,15 +311,15 @@ pub fn run_un_elevated(path: String, args: Option<String>) {
           println!("Failed to get state: {}", state.unwrap_err());
           break 'statechk;
         };
-        use anime_launcher_sdk::genshin::states::LauncherState::*;
+        use anime_launcher_sdk::genshin::states::LauncherState as E;
         match state {
-          FolderMigrationRequired { from, .. } => Err(format!(
+          E::FolderMigrationRequired { from, .. } => Err(format!(
             "A folder migration is required ({:?} needs to be moved)",
             from
           )),
-          WineNotInstalled => Err("Wine is not installed".to_string()),
-          PrefixNotExists => Err("The Wine prefix does not exist".to_string()),
-          GameNotInstalled(_) => Err("The game is not installed".to_string()),
+          E::WineNotInstalled => Err("Wine is not installed".to_string()),
+          E::PrefixNotExists => Err("The Wine prefix does not exist".to_string()),
+          E::GameNotInstalled(_) => Err("The game is not installed".to_string()),
           _ => Ok(()),
         }
         .expect("Can't launch game. Check the other launcher.");
